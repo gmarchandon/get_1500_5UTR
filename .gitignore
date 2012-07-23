@@ -13,3 +13,109 @@ META.yml
 MYMETA.yml
 nytprof.out
 pm_to_blib
+
+#!/usr/bin/perl
+use strict;
+use warnings;
+use Bio::SeqIO;
+use Bio::Seq;
+
+#how to... perl get_1500_5UTR.pl GFF_file GENOME_file LENGTH
+
+# Get 5UTR positions and return into hash_table
+sub five_UTR_regions()
+{
+  my $gff_file = shift;
+	my %hash_5UTR_end;
+	my %hash_5UTR_length;
+	open FILE_GFF, $gff_file or die $gff_file." NOT EXIST";
+	my $line_discard = <FILE_GFF>; #discard the first line
+	while(<FILE_GFF>)
+	{
+		my $line = $_;
+		chomp $line;
+		my @GFF_cols = split("\t", $line); #0_chromosome, 1_source, 2_feature, 3_start, 4_end, 5_nothing, 6_strand, 7_nothing2, 8_desc
+		if($GFF_cols[2] eq "five_prime_UTR")
+		{
+			my @DESC_cols = split(";", $GFF_cols[8]); #0_ID, 1_Parent, 2_pacid, 3_GENE_ID
+
+			# save hash_tables like:
+			# $hash_5UTR_end{chromosome;strand;geneID} = end;
+			# $hash_5UTR_length{chromosome;strand;geneID} = length;
+			if($GFF_cols[6] eq "+")
+			{
+				# if is NULL or 0 put a new end value
+				unless($hash_5UTR_end{$GFF_cols[0].";+;".$DESC_cols[3]})
+				{
+					$hash_5UTR_end{$GFF_cols[0].";+;".$DESC_cols[3]} = $GFF_cols[4];
+					$hash_5UTR_length{$GFF_cols[0].";+;".$DESC_cols[3]} = ($GFF_cols[4] - $GFF_cols[3]);
+				}
+				else
+				{
+					# if new end is greater than the saved value, the older is updated
+					if($GFF_cols[4] gt $hash_5UTR_end{$GFF_cols[0].";+;".$DESC_cols[3]})
+					{
+						$hash_5UTR_end{$GFF_cols[0].";+;".$DESC_cols[3]} = $GFF_cols[4];
+						$hash_5UTR_length{$GFF_cols[0].";+;".$DESC_cols[3]} = ($GFF_cols[4] - $GFF_cols[3]);
+					}
+				}
+			}
+			else
+			{
+				unless($hash_5UTR_end{$GFF_cols[0].";-;".$DESC_cols[3]})
+				{
+					$hash_5UTR_end{$GFF_cols[0].";-;".$DESC_cols[3]} = $GFF_cols[3];
+					$hash_5UTR_length{$GFF_cols[0].";-;".$DESC_cols[3]} = ($GFF_cols[4] - $GFF_cols[3]);
+				}
+				else
+				{
+					# if new end is less than the saved value, the older is updated
+					if($GFF_cols[4] lt $hash_5UTR_end{$GFF_cols[0].";-;".$DESC_cols[3]})
+					{
+						$hash_5UTR_end{$GFF_cols[0].";-;".$DESC_cols[3]} = $GFF_cols[3];
+						$hash_5UTR_length{$GFF_cols[0].";-;".$DESC_cols[3]} = ($GFF_cols[4] - $GFF_cols[3]);
+					}
+				}
+			}
+		}
+	}
+	close FILE_GFF;
+	return (\%hash_5UTR_end, \%hash_5UTR_length);
+}
+
+my $gff_file = $ARGV[0];
+my $genome_file = $ARGV[1];
+my $length = $ARGV[2];
+my ($hash_end, $hash_length) = &five_UTR_regions($gff_file);
+
+my $seq_genome = Bio::SeqIO->new( -format => 'fasta', -file => $genome_file);
+my %hash_upstream_5UTR_seq;
+while(my $seq_obj = $seq_genome->next_seq)
+{
+	my $chromosome = $seq_obj->display_id;
+	my $sequence = $seq_obj->seq;
+	foreach my $gene_id (sort(keys(%$hash_end)))
+	{
+		my @gene_id_cols = split(";", $gene_id); # 0_chromosome, 1_strand, 2_geneID
+		if($gene_id_cols[0] eq $chromosome)
+		{
+			my $end_pos = $$hash_end{$gene_id};
+			my $length_5UTR = $$hash_length{$gene_id};
+			if($gene_id_cols[1] eq "+")
+			{
+				$hash_upstream_5UTR_seq{$gene_id} = substr($sequence, $end_pos-$length_5UTR-$length, $length_5UTR+$length);
+			}
+			else
+			{
+				my $tmp_seq = substr($sequence, $end_pos-1, $length_5UTR+$length);
+				$tmp_seq = reverse($tmp_seq);
+				$tmp_seq =~ tr/ACGTNacgtn/TGCANtgcan/;
+				$hash_upstream_5UTR_seq{$gene_id} = $tmp_seq;
+			}
+		}
+	}
+}
+foreach my $gene_id (sort(keys(%hash_upstream_5UTR_seq)))
+{
+	print ">".$gene_id."\t".$hash_upstream_5UTR_seq{$gene_id}."\n";
+}
